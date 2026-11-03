@@ -1,0 +1,55 @@
+name: Automatická aktualizácia EPG
+
+on:
+  schedule:
+    # Spúšťa sa automaticky každých 6 hodín
+    - cron: '0 */6 * * *'
+  # Možnosť spustiť kedykoľvek manuálne jedným klikom na GitHube
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync-epg:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repozitára
+        uses: actions/checkout@v4
+
+      - name: Stiahnutie a overenie EPG z m3u4u
+        shell: bash
+        run: |
+          echo "Sťahujem čerstvé EPG z m3u4u..."
+          curl -sSL --max-time 180 "http://m3u4u.com/xml/26p5n37dp9s96xe7nv7j" -o temp_epg.xml
+
+          FILESIZE=$(wc -c < temp_epg.xml)
+          echo "Stiahnutá veľkosť: $FILESIZE bajtov"
+
+          if [ "$FILESIZE" -lt 100000 ]; then
+            echo "CHYBA: Súbor je neúplný (menej ako 100 KB). Odmietam uložiť."
+            exit 1
+          fi
+
+          if tail -n 20 temp_epg.xml | grep -q "</tv>"; then
+            echo "Overenie úspešné: Súbor je kompletný a končí </tv>."
+            mv temp_epg.xml epg.xml
+          else
+            echo "CHYBA: Súbor je useknutý, chýba koncovka </tv>!"
+            exit 1
+          fi
+
+      - name: Publikovanie do repozitára
+        shell: bash
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          git add epg.xml
+          if git diff --staged --quiet; then
+            echo "EPG sa od poslednej kontroly nezmenilo."
+          else
+            git commit -m "Automatická aktualizácia EPG [skip ci]"
+            git push
+            echo "Nové EPG úspešne nahrané!"
+          fi
