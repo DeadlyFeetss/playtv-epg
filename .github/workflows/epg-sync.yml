@@ -57,14 +57,34 @@ jobs:
             "Premium.cz": ["PREMIUM.HD.sk"]
           };
 
-          // Hybridné dopĺňanie chýbajúcich staníc z m3u4u (kde epgshare nemá relácie)
-          const M3U4U_REMAP = {
-            "C+Sport2.cz (src01)": { targetId: "Canal+.Sport.2.cz", targetName: "Canal+ sport 2" },
-            "C+Sport3.cz (src01)": { targetId: "Canal+.Sport.3.cz", targetName: "Canal+ sport 3" },
-            "FashionBox.sk (src09)": { targetId: "FashionBox.HD.cz", targetName: "FashionBox HD" },
-            "Filmbox Arthouse.sk (src09)": { targetId: "FilmBox.Arthouse.HD.sk", targetName: "FilmBox Arthouse" },
-            "TN Live.cz (src09)": { targetId: "TN.Live.cz", targetName: "TN Live" },
-            "TV.NR.SR.cz (src05)": { targetId: "NRSR.TV.HD.sk", targetName: "NRSR TV HD" }
+          // Hybridné dopĺňanie staníc z m3u4u (vrátane duálneho aliasu pre čisté ID)
+          const M3U4U_EXTRACTIONS = {
+            "MarkizaPlus1.sk (src01)": { targetId: "MarkizaPlus1.sk (src01)", targetName: "Markíza +1 HD", alias: "Markíza.+1.HD.sk" },
+            "Relax.cz (src01)": { targetId: "Relax.cz (src01)", targetName: "RELAX", alias: "RELAX.cz" },
+            "DVTV Extra.cz (src09)": { targetId: "DVTV Extra.cz (src09)", targetName: "DVTV Extra HD", alias: "DVTV.Extra.cz" },
+            "DVTV EXTRA HD.sk (src09)": { targetId: "DVTV EXTRA HD.sk (src09)", targetName: "DVTV Extra HD", alias: "DVTV.Extra.cz" },
+            "Nautical Channel.cz (src09)": { targetId: "Nautical Channel.cz (src09)", targetName: "Nautical Channel HD", alias: "Nautical.Channel.cz" },
+            "Fast &amp; FunBox HD.sk (src09)": { targetId: "Fast &amp; FunBox HD.sk (src09)", targetName: "FunBox HD", alias: "Fast&amp;Funbox.HD.cz" },
+            "Fast & FunBox HD.sk (src09)": { targetId: "Fast & FunBox HD.sk (src09)", targetName: "FunBox HD", alias: "Fast&amp;Funbox.HD.cz" },
+            "Premium.cz": { targetId: "Premium.cz", targetName: "Šlágr Premium HD", alias: "PREMIUM.HD.sk" },
+            "MTV.cz (src05)": { targetId: "MTV.cz (src05)", targetName: "MTV Live HD", alias: "MTV.Live.HD.sk" },
+            "Turbo.TV.cz (src05)": { targetId: "Turbo.TV.cz (src05)", targetName: "Turbo TV HD", alias: "Turbo.TV.cz" },
+            "Nickelodeon.cz (src05)": { targetId: "Nickelodeon.cz (src05)", targetName: "Nickelodeon", alias: "Nickelodeon.sk" },
+            "Nick Jr.sk (src09)": { targetId: "Nick Jr.sk (src09)", targetName: "Nick Jr.", alias: "Nick.Jr..sk" },
+            "TV Bratislava.cz (src09)": { targetId: "TV Bratislava.cz (src09)", targetName: "TV Bratislava HD", alias: "TV.Bratislava.cz" },
+            "TV Ruzinov HD.sk (src09)": { targetId: "TV Ruzinov HD.sk (src09)", targetName: "TV Ružinov", alias: "TV.Ružinov.cz" },
+            "Mestska TV Trnava.sk (src09)": { targetId: "Mestska TV Trnava.sk (src09)", targetName: "MTV Trnava HD", alias: "Městská.televize.Trnava.cz" },
+            "KOŠICE:DNES.cz (src09)": { targetId: "KOŠICE:DNES.cz (src09)", targetName: "Mestská TV Košice HD", alias: "KOŠICE:DNES.cz" },
+            "TV9.sk (src09)": { targetId: "TV9.sk (src09)", targetName: "TV9 HD", alias: "TV9.sk" },
+            "Akvárium.cz (src09)": { targetId: "Akvárium.cz (src09)", targetName: "Akvárium HD", alias: "Akvarium.cz" },
+            "Life TV.sk (src09)": { targetId: "Life TV.sk (src09)", targetName: "Life TV HD", alias: "LifeTV.cz" },
+            "JOJCinema+1.cz (src01)": { targetId: "JOJCinema+1.cz (src01)", targetName: "JOJ Cinema +1 HD", alias: "JOJ.Cinema.+1.HD.sk" },
+            "C+Sport2.cz (src01)": { targetId: "C+Sport2.cz (src01)", targetName: "Canal+ sport 2", alias: "Canal+.Sport.2.cz" },
+            "C+Sport3.cz (src01)": { targetId: "C+Sport3.cz (src01)", targetName: "Canal+ sport 3", alias: "Canal+.Sport.3.cz" },
+            "FashionBox.sk (src09)": { targetId: "FashionBox.sk (src09)", targetName: "FashionBox HD", alias: "FashionBox.HD.cz" },
+            "Filmbox Arthouse.sk (src09)": { targetId: "Filmbox Arthouse.sk (src09)", targetName: "FilmBox Arthouse", alias: "FilmBox.Arthouse.HD.sk" },
+            "TN Live.cz (src09)": { targetId: "TN Live.cz (src09)", targetName: "TN Live", alias: "TN.Live.cz" },
+            "TV.NR.SR.cz (src05)": { targetId: "TV.NR.SR.cz (src05)", targetName: "NRSR TV HD", alias: "NRSR.TV.HD.sk" }
           };
 
           // Zoznam ID staníc filtrovaných pre PlayTV zoznam
@@ -325,9 +345,12 @@ jobs:
               channelMap.set(clone.targetId, `  <channel id="${clone.targetId}">\n    <display-name lang="sk">${clone.targetName}</display-name>\n  </channel>\n`);
             }
 
-            // Definície pre hybridné kanály z m3u4u
-            for (const [sId, info] of Object.entries(M3U4U_REMAP)) {
+            // Definície pre hybridné kanály z m3u4u (targetId aj alias)
+            for (const [sId, info] of Object.entries(M3U4U_EXTRACTIONS)) {
               channelMap.set(info.targetId, `  <channel id="${info.targetId}">\n    <display-name lang="sk">${info.targetName}</display-name>\n  </channel>\n`);
+              if (info.alias && info.alias !== info.targetId) {
+                channelMap.set(info.alias, `  <channel id="${info.alias}">\n    <display-name lang="sk">${info.targetName}</display-name>\n  </channel>\n`);
+              }
             }
 
             // Spracovanie hlavných EPG zoznamov (epgshare01)
@@ -404,16 +427,20 @@ jobs:
                 if (line.includes('<programme')) {
                   const m = line.match(/channel="([^"]+)"/);
                   curProgChannel = m ? m[1] : '';
-                  if (M3U4U_REMAP[curProgChannel]) {
+                  if (M3U4U_EXTRACTIONS[curProgChannel]) {
                     inProg = true; curBlock = line + '\n';
                   } else inProg = false;
                 } else if (inProg) {
                   curBlock += line + '\n';
                   if (line.includes('</programme>')) {
                     inProg = false;
-                    const remap = M3U4U_REMAP[curProgChannel];
-                    const mappedBlock = curBlock.replace(/channel="([^"]+)"/, `channel="${remap.targetId}"`);
-                    progStream.write(mappedBlock);
+                    const info = M3U4U_EXTRACTIONS[curProgChannel];
+                    const targetBlock = curBlock.replace(/channel="([^"]+)"/, `channel="${info.targetId}"`);
+                    progStream.write(targetBlock);
+                    if (info.alias && info.alias !== info.targetId) {
+                      const aliasBlock = curBlock.replace(/channel="([^"]+)"/, `channel="${info.alias}"`);
+                      progStream.write(aliasBlock);
+                    }
                     curBlock = ''; curProgChannel = '';
                   }
                 }
