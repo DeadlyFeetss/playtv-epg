@@ -34,7 +34,7 @@ jobs:
           const path = require('path');
           const { URL } = require('url');
 
-          // Pomocná funkcia pre posun času o +1 hodinu pre stanice +1 HD
+          // Pomocná funkcia pre posun času o -1 hodinu (dozadu) pre stanice +1 HD
           function shiftXmltvTime(str, hours) {
             const m = str.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})\s*([+-]\d{4})?$/);
             if (!m) return str;
@@ -369,13 +369,13 @@ jobs:
                       }
                     }
 
-                    // Ak ide o materskú stanicu +1 kanála, vygenerujeme posunutý program o +1 hodinu
+                    // Ak ide o materskú stanicu +1 kanála, vygenerujeme posunutý program o 1 hodinu dozadu (-1)
                     if (PLUS_ONE_CLONES[curProgChannel]) {
                       const clone = PLUS_ONE_CLONES[curProgChannel];
                       const shifted = curBlock.replace(/<programme([^>]+)>/, (match, attrs) => {
                         let a = attrs.replace(/channel="([^"]+)"/, `channel="${clone.targetId}"`);
-                        a = a.replace(/start="([^"]+)"/, (m, s) => `start="${shiftXmltvTime(s, 1)}"`);
-                        a = a.replace(/stop="([^"]+)"/, (m, s) => `stop="${shiftXmltvTime(s, 1)}"`);
+                        a = a.replace(/start="([^"]+)"/, (m, s) => `start="${shiftXmltvTime(s, -1)}"`);
+                        a = a.replace(/stop="([^"]+)"/, (m, s) => `stop="${shiftXmltvTime(s, -1)}"`);
                         return `<programme${a}>`;
                       });
                       progStream.write(shifted);
