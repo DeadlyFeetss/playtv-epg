@@ -1,10 +1,10 @@
-name: Automatická aktualizácia EPG
+name: Automatická aktualizácia EPG z epgshare01
 
 on:
   schedule:
     # Spúšťa sa automaticky každých 6 hodín
     - cron: '0 */6 * * *'
-  # Možnosť spustiť kedykoľvek manuálne jedným klikom na GitHube
+  # Možnosť spustiť kedykoľvek manuálne jedným klikom na GitHube (Actions -> Run workflow)
   workflow_dispatch:
 
 permissions:
@@ -17,27 +17,146 @@ jobs:
       - name: Checkout repozitára
         uses: actions/checkout@v4
 
-      - name: Stiahnutie a overenie EPG z m3u4u
+      - name: Nastavenie Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Stiahnutie a zlúčenie SK1 a CZ1 do čistého epg.xml
         shell: bash
         run: |
-          echo "Sťahujem čerstvé EPG z m3u4u..."
-          curl -sSL --max-time 180 "http://m3u4u.com/xml/26p5n37dp9s96xe7nv7j" -o temp_epg.xml
+          node - << 'EOF'
+          const https = require('https');
+          const zlib = require('zlib');
+          const fs = require('fs');
+          const readline = require('readline');
+          const path = require('path');
 
-          FILESIZE=$(wc -c < temp_epg.xml)
-          echo "Stiahnutá veľkosť: $FILESIZE bajtov"
+          async function downloadGz(url, outGzPath) {
+            return new Promise((resolve, reject) => {
+              console.log(`Sťahujem ${url}...`);
+              const file = fs.createWriteStream(outGzPath);
+              https.get(url, (res) => {
+                if (res.statusCode !== 200) {
+                  return reject(new Error(`Chyba sťahovania ${url}: HTTP ${res.statusCode}`));
+                }
+                res.pipe(file);
+                file.on('finish', () => {
+                  file.close();
+                  resolve();
+                });
+              }).on('error', (err) => {
+                fs.unlink(outGzPath, () => {});
+                reject(err);
+              });
+            });
+          }
 
-          if [ "$FILESIZE" -lt 100000 ]; then
-            echo "CHYBA: Súbor je neúplný (menej ako 100 KB). Odmietam uložiť."
-            exit 1
-          fi
+          async function extractChannelsAndProgrammes(gzPath, channelMap, progTempStream) {
+            return new Promise((resolve, reject) => {
+              console.log(`Rozbaľujem a spracovávam ${path.basename(gzPath)}...`);
+              const gunzip = zlib.createGunzip();
+              const fileStream = fs.createReadStream(gzPath);
+              const rl = readline.createInterface({
+                input: fileStream.pipe(gunzip),
+                crlfDelay: Infinity
+              });
 
-          if tail -n 20 temp_epg.xml | grep -q "</tv>"; then
-            echo "Overenie úspešné: Súbor je kompletný a končí </tv>."
-            mv temp_epg.xml epg.xml
-          else
-            echo "CHYBA: Súbor je useknutý, chýba koncovka </tv>!"
-            exit 1
-          fi
+              let inChannel = false;
+              let inProg = false;
+              let currentBlock = '';
+              let currentId = '';
+              let progCount = 0;
+
+              rl.on('line', (line) => {
+                if (line.includes('<channel id=')) {
+                  inChannel = true;
+                  const m = line.match(/<channel id="([^"]+)">/);
+                  currentId = m ? m[1] : '';
+                  currentBlock = line + '\n';
+                } else if (inChannel) {
+                  currentBlock += line + '\n';
+                  if (line.includes('</channel>')) {
+                    inChannel = false;
+                    if (currentId && !channelMap.has(currentId)) {
+                      channelMap.set(currentId, currentBlock);
+                    }
+                    currentBlock = '';
+                    currentId = '';
+                  }
+                } else if (line.includes('<programme')) {
+                  inProg = true;
+                  currentBlock = line + '\n';
+                } else if (inProg) {
+                  currentBlock += line + '\n';
+                  if (line.includes('</programme>')) {
+                    inProg = false;
+                    progTempStream.write(currentBlock);
+                    progCount++;
+                    currentBlock = '';
+                  }
+                }
+              });
+
+              rl.on('close', () => {
+                console.log(`Dokončené pre ${path.basename(gzPath)}: Kanálov spolu: ${channelMap.size}, Programov: ${progCount}`);
+                resolve();
+              });
+
+              rl.on('error', reject);
+              gunzip.on('error', reject);
+              fileStream.on('error', reject);
+            });
+          }
+
+          async function run() {
+            const skGz = 'sk_temp.xml.gz';
+            const czGz = 'cz_temp.xml.gz';
+            const progTempPath = 'progs_temp.txt';
+            const outXmlPath = 'epg.xml';
+
+            await downloadGz('https://epgshare01.online/epgshare01/epg_ripper_SK1.xml.gz', skGz);
+            await downloadGz('https://epgshare01.online/epgshare01/epg_ripper_CZ1.xml.gz', czGz);
+
+            const channelMap = new Map();
+            const progTempStream = fs.createWriteStream(progTempPath, { encoding: 'utf8' });
+
+            await extractChannelsAndProgrammes(skGz, channelMap, progTempStream);
+            await extractChannelsAndProgrammes(czGz, channelMap, progTempStream);
+
+            await new Promise(r => progTempStream.end(r));
+
+            console.log('Zapisujem výsledné epg.xml...');
+            const finalStream = fs.createWriteStream(outXmlPath, { encoding: 'utf8' });
+            finalStream.write('<?xml version="1.0" encoding="utf-8"?>\n<tv generator-info-name="PlayTV EPG" generator-info-url="https://playtv.vip/">\n');
+
+            for (const block of channelMap.values()) {
+              finalStream.write(block);
+            }
+
+            const progReadStream = fs.createReadStream(progTempPath);
+            await new Promise((resolve, reject) => {
+              progReadStream.pipe(finalStream, { end: false });
+              progReadStream.on('end', resolve);
+              progReadStream.on('error', reject);
+            });
+
+            finalStream.write('</tv>\n');
+            await new Promise(r => finalStream.end(r));
+
+            try { fs.unlinkSync(skGz); } catch(e){}
+            try { fs.unlinkSync(czGz); } catch(e){}
+            try { fs.unlinkSync(progTempPath); } catch(e){}
+
+            const stats = fs.statSync(outXmlPath);
+            console.log(`✅ Úspech! Vygenerovaný čistý súbor epg.xml (Veľkosť: ${(stats.size / 1024 / 1024).toFixed(2)} MB, Kanálov: ${channelMap.size})`);
+          }
+
+          run().catch(err => {
+            console.error('CHYBA:', err);
+            process.exit(1);
+          });
+          EOF
 
       - name: Publikovanie do repozitára
         shell: bash
@@ -49,7 +168,7 @@ jobs:
           if git diff --staged --quiet; then
             echo "EPG sa od poslednej kontroly nezmenilo."
           else
-            git commit -m "Automatická aktualizácia EPG [skip ci]"
+            git commit -m "Automatická aktualizácia EPG z epgshare01 (CZ + SK) [skip ci]"
             git push
             echo "Nové EPG úspešne nahrané!"
           fi
