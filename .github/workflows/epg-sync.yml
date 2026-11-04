@@ -1,4 +1,4 @@
-name: Automatická aktualizácia Hybridného EPG z epgshare01
+name: Automatická aktualizácia Hybridného EPG z epgshare01 a m3u4u
 
 on:
   schedule:
@@ -22,16 +22,19 @@ jobs:
         with:
           node-version: 20
 
-      - name: Stiahnutie, filtrovanie na PlayTV a generovanie +1 posunov
+      - name: Stiahnutie, filtrovanie na PlayTV a generovanie Hybridného EPG
         shell: bash
         run: |
           node - << 'EOF'
+          const http = require('http');
           const https = require('https');
           const zlib = require('zlib');
           const fs = require('fs');
           const readline = require('readline');
           const path = require('path');
+          const { URL } = require('url');
 
+          // Pomocná funkcia pre posun času o +1 hodinu pre stanice +1 HD
           function shiftXmltvTime(str, hours) {
             const m = str.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})\s*([+-]\d{4})?$/);
             if (!m) return str;
@@ -41,62 +44,258 @@ jobs:
             return `${d.getUTCFullYear()}${pad(d.getUTCMonth()+1)}${pad(d.getUTCDate())}${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())} ${m[7] || '+0100'}`;
           }
 
+          // Klonovanie programov pre +1 stanice s posunom o 1 hodinu dopredu
           const PLUS_ONE_CLONES = {
             "Markíza.HD.sk": { targetId: "Markíza.+1.HD.sk", targetName: "Markíza +1 HD" },
             "JOJ.HD.sk": { targetId: "JOJ.+1.HD.sk", targetName: "JOJ +1 HD" },
             "JOJ.Cinema.HD.sk": { targetId: "JOJ.Cinema.+1.HD.sk", targetName: "JOJ Cinema +1 HD" }
           };
 
+          // Duplikovanie programov na alternatívne / sesterské ID (napr. Sport1.cz -> Sport1.HD.sk)
+          const PROGRAMME_ALIASES = {
+            "Sport1.cz": ["Sport1.HD.sk"],
+            "Premium.cz": ["PREMIUM.HD.sk"]
+          };
+
+          // Hybridné dopĺňanie chýbajúcich staníc z m3u4u (kde epgshare nemá relácie)
+          const M3U4U_REMAP = {
+            "C+Sport2.cz (src01)": { targetId: "Canal+.Sport.2.cz", targetName: "Canal+ sport 2" },
+            "C+Sport3.cz (src01)": { targetId: "Canal+.Sport.3.cz", targetName: "Canal+ sport 3" },
+            "FashionBox.sk (src09)": { targetId: "FashionBox.HD.cz", targetName: "FashionBox HD" },
+            "Filmbox Arthouse.sk (src09)": { targetId: "FilmBox.Arthouse.HD.sk", targetName: "FilmBox Arthouse" },
+            "TN Live.cz (src09)": { targetId: "TN.Live.cz", targetName: "TN Live" },
+            "TV.NR.SR.cz (src05)": { targetId: "NRSR.TV.HD.sk", targetName: "NRSR TV HD" }
+          };
+
+          // Zoznam ID staníc filtrovaných pre PlayTV zoznam
           const NEEDED_IDS = new Set([
-            ":24.HD.sk", ":ŠPORT.HD.sk", "A11.cz", "AMC.cz", "AXN.Black.cz", "AXN.White.cz", "AXN.cz",
-            "Animal.Planet.HD.sk", "Arena.Sport.1.HD.sk", "Arena.Sport.2.HD.sk", "Auto.Motor.Sport.HD.sk",
-            "Baby.TV.cz", "Barrandov.Kino.cz", "Barrandov.Krimi.HD.sk", "Barrandov.TV.HD.sk", "BBC.Earth.HD.sk",
-            "CANAL+.Action.HD.sk", "CANAL+.Sport.4.HD.sk", "CANAL+.Sport.5.HD.sk", "CANAL+.Sport.6.HD.sk",
-            "CANAL+.Sport.7.HD.sk", "CANAL+.Sport.8.HD.sk", "CANAL+.Sport.HD.sk", "Canal+.Sport.2.cz",
-            "Canal+.Sport.3.cz", "Cartoon.Network.HD.sk", "Cartoonito.cz", "Cinemax.2.HD.sk", "Cinemax.HD.sk",
-            "Club.MTV.sk", "CNN.Prima.News.cz", "Crime.and.Investigation.cz", "CS.Film-CS.Horror.HD.sk",
-            "CS.History.sk", "CS.Mystery.cz", "ČT.:D.cz", "ČT.sport.cz", "ČT1.cz", "ČT2.cz", "ČT24.cz",
-            "DAJTO.HD.sk", "Deluxe.Music.cz", "Discovery.Channel.HD.sk", "Disney.Channel.sk", "Disney.Junior.cz",
-            "DJazz.cz", "DocuBox.HD.cz", "Doma.HD.sk", "Duck.TV.HD.sk", "ducktv.plus.cz", "Dvojka.HD.sk",
-            "DVTV.Extra.cz", "E!.Entertainment.cz", "Epic.Drama.HD.sk", "Eurosport.1.HD.sk", "Eurosport.2.HD.sk",
-            "Fashion.TV.sk", "FashionBox.HD.cz", "Fast&amp;Funbox.HD.cz", "Fightbox.HD.sk", "Film+.cz",
-            "Film.Europe.+.sk", "Film.Europe.HD.sk", "Filmbox.Extra.HD.sk", "Filmbox.Family.sk", "Filmbox.HD.sk",
-            "Filmbox.Premium.HD.sk", "Filmbox.Stars.HD.sk", "Folklorika.TV.HD.sk", "Food.Network.HD.sk",
-            "Fuel.cz", "Gametoon.HD.(hr).cz", "Golf.Channel.HD.sk", "HaHa.TV.cz", "HBO.HD.sk", "HBO2.HD.sk",
-            "HBO3.HD.sk", "HGTV.cz", "History.Channel.cz", "History.HD.sk", "ID.HD.sk", "iConcerts.HD.sk",
-            "Investigation.Discovery.HD.sk", "Jednotka.HD.sk", "Jim.Jam.sk", "Jihočeská.televize.cz",
-            "Jojko.cz", "JOJ.24.HD.sk", "JOJ.Cinema.HD.sk", "JOJ.Family.cz", "JOJ.HD.sk", "JOJ.Plus.cz",
-            "JOJ.Svet.HD.sk", "JOJ.ŠPORT.HD.sk", "JOJ.Šport.2.cz", "Kanal.1.cz", "Kino.Barrandov.HD.sk",
-            "KOŠICE:DNES.cz", "KVIFF.TV.cz", "LaLa.TV.HD.sk", "LifeTV.cz", "Love.Nature.HD.sk", "Lux.TV.HD.sk",
-            "Markíza.HD.sk", "Markíza.KRIMI.HD.sk", "Markíza.Klasik.HD.sk", "Markíza.International.cz",
-            "Městská.televize.Trnava.cz", "Minimax.sk", "Mňau.TV.cz", "MTV.00s.sk", "MTV.80s.sk", "MTV.90s.sk",
-            "MTV.Hits.sk", "MTV.Live.HD.sk", "MTV.sk", "Music.Box.Classic.cz", "Music.Box.Dance.cz",
-            "Music.Box.Hits.cz", "Music.Box.Sexy.cz", "National.Geographic.HD.cz", "Nautical.Channel.cz",
-            "NGC.Wild.HD.sk", "Nick.Jr..sk", "Nickelodeon.sk", "Nicktoons.cz", "NOE.sk", "Noe+.cz",
-            "Nova.Action.cz", "Nova.Cinema.cz", "Nova.cz", "Nova.Fun.cz", "Nova.International.cz",
-            "Nova.Krimi.cz", "Nova.Lady.cz", "Nova.Sport.1.HD.sk", "Nova.Sport.2.HD.sk", "Nova.Sport.3.HD.sk",
-            "Nova.Sport.4.HD.sk", "Nova.Sport.5.HD.sk", "Nova.Sport.6.HD.sk", "Óčko.Black.HD.sk",
-            "Óčko.Expres.HD.sk", "Óčko.HD.sk", "Óčko.Star.HD.sk", "Paprika.cz", "Park.TV.cz", "POLAR.cz",
-            "PRAHA.TV.cz", "PREMIER.SPORT.1.HD.sk", "PREMIER.SPORT.2.HD.sk", "PREMIER.SPORT.3.HD.sk",
-            "Prima.Cool.cz", "Prima.COOL.SK.cz", "Prima.cz", "Prima.Krimi.cz", "Prima.KRIMI.SK.cz",
-            "Prima.LOVE.cz", "Prima.LOVE.SK.cz", "Prima.MAX.cz", "Prima.Show.cz", "Prima.SK.cz",
-            "Prima.Star.cz", "Red.Bull.TV.cz", "RELAX.cz", "RETRO.Music.TV.sk", "Rik.TV.cz", "Senzi.sk",
-            "Seznam.cz.TV.cz", "Skvelé.TV.cz", "Spark.TV.cz", "Spektrum.cz", "Spektrum.Home.HD.sk",
-            "Sport1.HD.sk", "Sport2.HD.sk", "STORY.4.sk", "Superyacht.cz", "Šlágr.Muzika.cz", "Šlágr.Originál.cz",
-            "TA3.HD.sk", "TLC.HD.sk", "Travel.Channel.HD.sk", "Travel.XP.HD.sk", "Turbo.TV.cz", "TV.Bratislava.cz",
-            "TV.Brno.1.cz", "TV.Doktor.cz", "TV.REBEL.sk", "TV.Spark.HD.sk", "Viasat.Explore.HD.sk",
-            "Viasat.History.HD.sk", "Viasat.Nature.HD.sk", "Warner.TV.cz"
+            "360TuneBox.cz",
+            ":24.HD.sk",
+            ":ŠPORT.HD.sk",
+            "A11.cz",
+            "AMC.cz",
+            "AXN.Black.cz",
+            "AXN.White.cz",
+            "AXN.cz",
+            "Animal.Planet.HD.sk",
+            "Arena.Sport.1.HD.sk",
+            "Arena.Sport.2.HD.sk",
+            "Auto.Motor.Sport.HD.sk",
+            "BBC.Earth.HD.sk",
+            "Baby.TV.cz",
+            "Barrandov.Kino.cz",
+            "Barrandov.Krimi.HD.sk",
+            "Barrandov.TV.HD.sk",
+            "CANAL+.Action.HD.sk",
+            "CANAL+.Sport.4.HD.sk",
+            "CANAL+.Sport.5.HD.sk",
+            "CANAL+.Sport.6.HD.sk",
+            "CANAL+.Sport.7.HD.sk",
+            "CANAL+.Sport.8.HD.sk",
+            "CANAL+.Sport.HD.sk",
+            "CNN.Prima.News.cz",
+            "CS.Film-CS.Horror.HD.sk",
+            "CS.History.sk",
+            "CS.Mystery.cz",
+            "Canal+.Sport.2.cz",
+            "Canal+.Sport.3.cz",
+            "Cartoon.Network.HD.sk",
+            "Cartoonito.cz",
+            "Cinemax.2.HD.sk",
+            "Cinemax.HD.sk",
+            "Club.MTV.sk",
+            "Crime.and.Investigation.cz",
+            "DAJTO.HD.sk",
+            "DJazz.cz",
+            "DVTV.Extra.cz",
+            "Deluxe.Music.cz",
+            "Discovery.Channel.HD.sk",
+            "Disney.Channel.sk",
+            "Disney.Junior.cz",
+            "DocuBox.HD.cz",
+            "Doma.HD.sk",
+            "Duck.TV.HD.sk",
+            "Dvojka.HD.sk",
+            "E!.Entertainment.cz",
+            "Epic.Drama.HD.sk",
+            "Eurosport.1.HD.sk",
+            "Eurosport.2.HD.sk",
+            "FashionBox.HD.cz",
+            "FashionTV.HD.cz",
+            "Fast&amp;Funbox.HD.cz",
+            "Fightbox.HD.sk",
+            "Film+.cz",
+            "Film.Europe.+.sk",
+            "Film.Europe.HD.sk",
+            "FilmBox.Arthouse.HD.sk",
+            "Filmbox.Extra.HD.sk",
+            "Filmbox.Family.sk",
+            "Filmbox.HD.sk",
+            "Filmbox.Premium.HD.sk",
+            "Filmbox.Stars.HD.sk",
+            "Fishing.and.Hunting.sk",
+            "Folklorika.TV.HD.sk",
+            "Food.Network.HD.sk",
+            "Fuel.cz",
+            "Gametoon.HD.(hr).cz",
+            "Golf.Channel.HD.sk",
+            "HBO.HD.sk",
+            "HBO2.HD.sk",
+            "HBO3.HD.sk",
+            "HGTV.cz",
+            "HaHa.TV.cz",
+            "History.Channel.cz",
+            "History.HD.sk",
+            "ID.HD.sk",
+            "JOJ.+1.HD.sk",
+            "JOJ.24.HD.sk",
+            "JOJ.Cinema.+1.HD.sk",
+            "JOJ.Cinema.HD.sk",
+            "JOJ.Family.cz",
+            "JOJ.HD.sk",
+            "JOJ.Plus.cz",
+            "JOJ.Svet.HD.sk",
+            "JOJ.ŠPORT.HD.sk",
+            "JOJ.Šport.2.cz",
+            "Jednotka.HD.sk",
+            "Jihočeská.televize.cz",
+            "Jim.Jam.sk",
+            "Jojko.cz",
+            "KOŠICE:DNES.cz",
+            "KVIFF.TV.cz",
+            "Kanal.1.cz",
+            "Kino.Barrandov.HD.sk",
+            "LaLa.TV.HD.sk",
+            "LifeTV.cz",
+            "Love.Nature.HD.sk",
+            "Lux.TV.HD.sk",
+            "MTV.00s.sk",
+            "MTV.80s.sk",
+            "MTV.90s.sk",
+            "MTV.Hits.sk",
+            "MTV.Live.HD.sk",
+            "MTV.sk",
+            "Markíza.+1.HD.sk",
+            "Markíza.HD.sk",
+            "Markíza.International.HD.sk",
+            "Markíza.KRIMI.HD.sk",
+            "Markíza.Klasik.HD.sk",
+            "Minimax.sk",
+            "Music.Box.Classic.cz",
+            "Music.Box.Dance.cz",
+            "Music.Box.Hits.cz",
+            "Music.Box.Sexy.cz",
+            "Městská.televize.Trnava.cz",
+            "Mňau.TV.cz",
+            "NGC.Wild.HD.sk",
+            "NOE.sk",
+            "NRSR.TV.HD.sk",
+            "National.Geographic.HD.cz",
+            "Nautical.Channel.cz",
+            "Nick.Jr..sk",
+            "Nickelodeon.sk",
+            "Nicktoons.cz",
+            "Noe+.cz",
+            "Nova.Action.cz",
+            "Nova.Cinema.cz",
+            "Nova.Fun.cz",
+            "Nova.International.cz",
+            "Nova.Krimi.cz",
+            "Nova.Lady.cz",
+            "Nova.Sport.1.HD.sk",
+            "Nova.Sport.2.HD.sk",
+            "Nova.Sport.3.HD.sk",
+            "Nova.Sport.4.HD.sk",
+            "Nova.Sport.5.HD.sk",
+            "Nova.Sport.6.HD.sk",
+            "Nova.cz",
+            "POLAR.cz",
+            "PRAHA.TV.cz",
+            "PREMIER.SPORT.1.HD.sk",
+            "PREMIER.SPORT.2.HD.sk",
+            "PREMIER.SPORT.3.HD.sk",
+            "PREMIUM.HD.sk",
+            "Paprika.cz",
+            "Park.TV.cz",
+            "Premium.cz",
+            "Prima.COOL.SK.cz",
+            "Prima.Cool.cz",
+            "Prima.KRIMI.SK.cz",
+            "Prima.Krimi.cz",
+            "Prima.LOVE.SK.cz",
+            "Prima.LOVE.cz",
+            "Prima.MAX.cz",
+            "Prima.SK.cz",
+            "Prima.Show.cz",
+            "Prima.Star.cz",
+            "Prima.cz",
+            "RELAX.cz",
+            "RETRO.Music.TV.sk",
+            "Red.Bull.TV.cz",
+            "Rik.TV.cz",
+            "STORY.4.sk",
+            "Senzi.sk",
+            "Seznam.cz.TV.cz",
+            "Skvelé.TV.cz",
+            "Spektrum.Home.HD.sk",
+            "Spektrum.cz",
+            "Sport1.HD.sk",
+            "Sport1.cz",
+            "Sport2.HD.sk",
+            "Stingray.CMusic.cz",
+            "Stingray.Classica.cz",
+            "Superyacht.cz",
+            "TA3.HD.sk",
+            "TLC.HD.sk",
+            "TN.Live.cz",
+            "TV.Bratislava.cz",
+            "TV.Brno.1.cz",
+            "TV.Doktor.cz",
+            "TV.REBEL.sk",
+            "TV.Spark.HD.sk",
+            "Travel.Channel.HD.sk",
+            "Travel.XP.HD.sk",
+            "Turbo.TV.cz",
+            "Viasat.Explore.HD.sk",
+            "Viasat.History.HD.sk",
+            "Viasat.Nature.HD.sk",
+            "Warner.TV.cz",
+            "ducktv.plus.cz",
+            "iConcerts.HD.sk",
+            "Óčko.Black.HD.sk",
+            "Óčko.Expres.HD.sk",
+            "Óčko.HD.sk",
+            "Óčko.Star.HD.sk",
+            "ČT.:D.cz",
+            "ČT.sport.cz",
+            "ČT1.cz",
+            "ČT2.cz",
+            "ČT24.cz",
+            "Šlágr.Muzika.cz",
+            "Šlágr.Originál.cz"
           ]);
+
           for (const parentId of Object.keys(PLUS_ONE_CLONES)) NEEDED_IDS.add(parentId);
 
-          async function downloadFile(url, dest) {
+          // Univerzálny sťahovač podporujúci presmerovania a gzip
+          function downloadUrl(url, dest) {
             return new Promise((resolve, reject) => {
-              const file = fs.createWriteStream(dest);
-              https.get(url, (res) => {
-                if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode}`));
+              const parsed = new URL(url);
+              const client = parsed.protocol === 'https:' ? https : http;
+              const req = client.get(url, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' } }, (res) => {
+                if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                  const nextUrl = new URL(res.headers.location, url).toString();
+                  return resolve(downloadUrl(nextUrl, dest));
+                }
+                if (res.statusCode !== 200) {
+                  return reject(new Error(`HTTP ${res.statusCode} from ${url}`));
+                }
+                const file = fs.createWriteStream(dest);
                 res.pipe(file);
                 file.on('finish', () => { file.close(); resolve(); });
-              }).on('error', (err) => { fs.unlink(dest, () => {}); reject(err); });
+                file.on('error', (err) => { fs.unlink(dest, () => {}); reject(err); });
+              });
+              req.on('error', reject);
             });
           }
 
@@ -104,20 +303,34 @@ jobs:
             const t0 = Date.now();
             const skGz = 'sk_temp.xml.gz';
             const czGz = 'cz_temp.xml.gz';
+            const m3u4uFile = 'm3u4u_temp.xml';
             const progTemp = 'progs_temp.txt';
             const outXml = 'epg.xml';
 
-            console.log('1. Sťahujem čerstvé EPG dáta zo siete epgshare01...');
-            await downloadFile('https://epgshare01.online/epgshare01/epg_ripper_SK1.xml.gz', skGz);
-            await downloadFile('https://epgshare01.online/epgshare01/epg_ripper_CZ1.xml.gz', czGz);
+            console.log('1. Sťahujem čerstvé EPG dáta (epgshare01 SK + CZ a m3u4u hybrid)...');
+            await downloadUrl('https://epgshare01.online/epgshare01/epg_ripper_SK1.xml.gz', skGz);
+            await downloadUrl('https://epgshare01.online/epgshare01/epg_ripper_CZ1.xml.gz', czGz);
+            try {
+              await downloadUrl('https://m3u4u.com/epg/26p5n37dp9s96xe7nv7j', m3u4uFile);
+              console.log('m3u4u hybrid zdroj úspešne stiahnutý.');
+            } catch (err) {
+              console.warn('Upozornenie: m3u4u hybrid sa nepodarilo stiahnuť, pokračujem bez neho:', err.message);
+            }
 
             const channelMap = new Map();
             const progStream = fs.createWriteStream(progTemp, { encoding: 'utf8' });
 
+            // Definície pre +1 kanály
             for (const [pId, clone] of Object.entries(PLUS_ONE_CLONES)) {
               channelMap.set(clone.targetId, `  <channel id="${clone.targetId}">\n    <display-name lang="sk">${clone.targetName}</display-name>\n  </channel>\n`);
             }
 
+            // Definície pre hybridné kanály z m3u4u
+            for (const [sId, info] of Object.entries(M3U4U_REMAP)) {
+              channelMap.set(info.targetId, `  <channel id="${info.targetId}">\n    <display-name lang="sk">${info.targetName}</display-name>\n  </channel>\n`);
+            }
+
+            // Spracovanie hlavných EPG zoznamov (epgshare01)
             async function processGz(gzPath) {
               const gunzip = zlib.createGunzip();
               const rl = readline.createInterface({ input: fs.createReadStream(gzPath).pipe(gunzip), crlfDelay: Infinity });
@@ -148,6 +361,15 @@ jobs:
                     inProg = false;
                     progStream.write(curBlock);
 
+                    // Duplikovanie relácií pre sesterské ID (napr. Sport1.cz -> Sport1.HD.sk)
+                    if (PROGRAMME_ALIASES[curProgChannel]) {
+                      for (const aliasId of PROGRAMME_ALIASES[curProgChannel]) {
+                        const aliased = curBlock.replace(/channel="([^"]+)"/, `channel="${aliasId}"`);
+                        progStream.write(aliased);
+                      }
+                    }
+
+                    // Ak ide o materskú stanicu +1 kanála, vygenerujeme posunutý program o +1 hodinu
                     if (PLUS_ONE_CLONES[curProgChannel]) {
                       const clone = PLUS_ONE_CLONES[curProgChannel];
                       const shifted = curBlock.replace(/<programme([^>]+)>/, (match, attrs) => {
@@ -164,12 +386,47 @@ jobs:
               }
             }
 
-            console.log('2. Filtrujem stanice a generujem synchronizované +1 programy...');
+            // Spracovanie hybridných relácií z m3u4u
+            async function processM3u4u(filePath) {
+              if (!fs.existsSync(filePath)) return;
+              let inStream = fs.createReadStream(filePath);
+              const headerBuf = Buffer.alloc(2);
+              const fd = fs.openSync(filePath, 'r');
+              fs.readSync(fd, headerBuf, 0, 2, 0);
+              fs.closeSync(fd);
+              if (headerBuf[0] === 0x1f && headerBuf[1] === 0x8b) {
+                inStream = inStream.pipe(zlib.createGunzip());
+              }
+              const rl = readline.createInterface({ input: inStream, crlfDelay: Infinity });
+              let inProg = false, curBlock = '', curProgChannel = '';
+
+              for await (const line of rl) {
+                if (line.includes('<programme')) {
+                  const m = line.match(/channel="([^"]+)"/);
+                  curProgChannel = m ? m[1] : '';
+                  if (M3U4U_REMAP[curProgChannel]) {
+                    inProg = true; curBlock = line + '\n';
+                  } else inProg = false;
+                } else if (inProg) {
+                  curBlock += line + '\n';
+                  if (line.includes('</programme>')) {
+                    inProg = false;
+                    const remap = M3U4U_REMAP[curProgChannel];
+                    const mappedBlock = curBlock.replace(/channel="([^"]+)"/, `channel="${remap.targetId}"`);
+                    progStream.write(mappedBlock);
+                    curBlock = ''; curProgChannel = '';
+                  }
+                }
+              }
+            }
+
+            console.log('2. Filtrujem stanice a generujem hybridné relácie...');
             await processGz(skGz);
             await processGz(czGz);
+            await processM3u4u(m3u4uFile);
             await new Promise(r => progStream.end(r));
 
-            console.log('3. Zapisujem optimalizované epg.xml...');
+            console.log('3. Zapisujem finálne optimalizované epg.xml...');
             const finalStream = fs.createWriteStream(outXml, { encoding: 'utf8' });
             finalStream.write('<?xml version="1.0" encoding="utf-8"?>\n<tv generator-info-name="PlayTV Hybrid EPG" generator-info-url="https://playtv.vip/">\n');
 
@@ -187,6 +444,7 @@ jobs:
 
             try { fs.unlinkSync(skGz); } catch(e){}
             try { fs.unlinkSync(czGz); } catch(e){}
+            try { fs.unlinkSync(m3u4uFile); } catch(e){}
             try { fs.unlinkSync(progTemp); } catch(e){}
 
             const stat = fs.statSync(outXml);
