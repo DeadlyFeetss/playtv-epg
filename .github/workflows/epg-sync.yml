@@ -1,4 +1,4 @@
-name: Automatická aktualizácia EPG z epgshare01
+name: Automatická aktualizácia Hybridného EPG z epgshare01
 
 on:
   schedule:
@@ -22,7 +22,7 @@ jobs:
         with:
           node-version: 20
 
-      - name: Stiahnutie a zlúčenie SK1 a CZ1 do čistého epg.xml
+      - name: Stiahnutie, filtrovanie na PlayTV a generovanie +1 posunov
         shell: bash
         run: |
           node - << 'EOF'
@@ -32,113 +32,154 @@ jobs:
           const readline = require('readline');
           const path = require('path');
 
-          async function downloadGz(url, outGzPath) {
-            return new Promise((resolve, reject) => {
-              console.log(`Sťahujem ${url}...`);
-              const file = fs.createWriteStream(outGzPath);
-              https.get(url, (res) => {
-                if (res.statusCode !== 200) {
-                  return reject(new Error(`Chyba sťahovania ${url}: HTTP ${res.statusCode}`));
-                }
-                res.pipe(file);
-                file.on('finish', () => {
-                  file.close();
-                  resolve();
-                });
-              }).on('error', (err) => {
-                fs.unlink(outGzPath, () => {});
-                reject(err);
-              });
-            });
+          function shiftXmltvTime(str, hours) {
+            const m = str.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})\s*([+-]\d{4})?$/);
+            if (!m) return str;
+            const d = new Date(Date.UTC(parseInt(m[1],10), parseInt(m[2],10)-1, parseInt(m[3],10), parseInt(m[4],10), parseInt(m[5],10), parseInt(m[6],10)));
+            d.setUTCHours(d.getUTCHours() + hours);
+            const pad = n => String(n).padStart(2, '0');
+            return `${d.getUTCFullYear()}${pad(d.getUTCMonth()+1)}${pad(d.getUTCDate())}${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())} ${m[7] || '+0100'}`;
           }
 
-          async function extractChannelsAndProgrammes(gzPath, channelMap, progTempStream) {
+          const PLUS_ONE_CLONES = {
+            "Markíza.HD.sk": { targetId: "Markíza.+1.HD.sk", targetName: "Markíza +1 HD" },
+            "JOJ.HD.sk": { targetId: "JOJ.+1.HD.sk", targetName: "JOJ +1 HD" },
+            "JOJ.Cinema.HD.sk": { targetId: "JOJ.Cinema.+1.HD.sk", targetName: "JOJ Cinema +1 HD" }
+          };
+
+          const NEEDED_IDS = new Set([
+            ":24.HD.sk", ":ŠPORT.HD.sk", "A11.cz", "AMC.cz", "AXN.Black.cz", "AXN.White.cz", "AXN.cz",
+            "Animal.Planet.HD.sk", "Arena.Sport.1.HD.sk", "Arena.Sport.2.HD.sk", "Auto.Motor.Sport.HD.sk",
+            "Baby.TV.cz", "Barrandov.Kino.cz", "Barrandov.Krimi.HD.sk", "Barrandov.TV.HD.sk", "BBC.Earth.HD.sk",
+            "CANAL+.Action.HD.sk", "CANAL+.Sport.4.HD.sk", "CANAL+.Sport.5.HD.sk", "CANAL+.Sport.6.HD.sk",
+            "CANAL+.Sport.7.HD.sk", "CANAL+.Sport.8.HD.sk", "CANAL+.Sport.HD.sk", "Canal+.Sport.2.cz",
+            "Canal+.Sport.3.cz", "Cartoon.Network.HD.sk", "Cartoonito.cz", "Cinemax.2.HD.sk", "Cinemax.HD.sk",
+            "Club.MTV.sk", "CNN.Prima.News.cz", "Crime.and.Investigation.cz", "CS.Film-CS.Horror.HD.sk",
+            "CS.History.sk", "CS.Mystery.cz", "ČT.:D.cz", "ČT.sport.cz", "ČT1.cz", "ČT2.cz", "ČT24.cz",
+            "DAJTO.HD.sk", "Deluxe.Music.cz", "Discovery.Channel.HD.sk", "Disney.Channel.sk", "Disney.Junior.cz",
+            "DJazz.cz", "DocuBox.HD.cz", "Doma.HD.sk", "Duck.TV.HD.sk", "ducktv.plus.cz", "Dvojka.HD.sk",
+            "DVTV.Extra.cz", "E!.Entertainment.cz", "Epic.Drama.HD.sk", "Eurosport.1.HD.sk", "Eurosport.2.HD.sk",
+            "Fashion.TV.sk", "FashionBox.HD.cz", "Fast&amp;Funbox.HD.cz", "Fightbox.HD.sk", "Film+.cz",
+            "Film.Europe.+.sk", "Film.Europe.HD.sk", "Filmbox.Extra.HD.sk", "Filmbox.Family.sk", "Filmbox.HD.sk",
+            "Filmbox.Premium.HD.sk", "Filmbox.Stars.HD.sk", "Folklorika.TV.HD.sk", "Food.Network.HD.sk",
+            "Fuel.cz", "Gametoon.HD.(hr).cz", "Golf.Channel.HD.sk", "HaHa.TV.cz", "HBO.HD.sk", "HBO2.HD.sk",
+            "HBO3.HD.sk", "HGTV.cz", "History.Channel.cz", "History.HD.sk", "ID.HD.sk", "iConcerts.HD.sk",
+            "Investigation.Discovery.HD.sk", "Jednotka.HD.sk", "Jim.Jam.sk", "Jihočeská.televize.cz",
+            "Jojko.cz", "JOJ.24.HD.sk", "JOJ.Cinema.HD.sk", "JOJ.Family.cz", "JOJ.HD.sk", "JOJ.Plus.cz",
+            "JOJ.Svet.HD.sk", "JOJ.ŠPORT.HD.sk", "JOJ.Šport.2.cz", "Kanal.1.cz", "Kino.Barrandov.HD.sk",
+            "KOŠICE:DNES.cz", "KVIFF.TV.cz", "LaLa.TV.HD.sk", "LifeTV.cz", "Love.Nature.HD.sk", "Lux.TV.HD.sk",
+            "Markíza.HD.sk", "Markíza.KRIMI.HD.sk", "Markíza.Klasik.HD.sk", "Markíza.International.cz",
+            "Městská.televize.Trnava.cz", "Minimax.sk", "Mňau.TV.cz", "MTV.00s.sk", "MTV.80s.sk", "MTV.90s.sk",
+            "MTV.Hits.sk", "MTV.Live.HD.sk", "MTV.sk", "Music.Box.Classic.cz", "Music.Box.Dance.cz",
+            "Music.Box.Hits.cz", "Music.Box.Sexy.cz", "National.Geographic.HD.cz", "Nautical.Channel.cz",
+            "NGC.Wild.HD.sk", "Nick.Jr..sk", "Nickelodeon.sk", "Nicktoons.cz", "NOE.sk", "Noe+.cz",
+            "Nova.Action.cz", "Nova.Cinema.cz", "Nova.cz", "Nova.Fun.cz", "Nova.International.cz",
+            "Nova.Krimi.cz", "Nova.Lady.cz", "Nova.Sport.1.HD.sk", "Nova.Sport.2.HD.sk", "Nova.Sport.3.HD.sk",
+            "Nova.Sport.4.HD.sk", "Nova.Sport.5.HD.sk", "Nova.Sport.6.HD.sk", "Óčko.Black.HD.sk",
+            "Óčko.Expres.HD.sk", "Óčko.HD.sk", "Óčko.Star.HD.sk", "Paprika.cz", "Park.TV.cz", "POLAR.cz",
+            "PRAHA.TV.cz", "PREMIER.SPORT.1.HD.sk", "PREMIER.SPORT.2.HD.sk", "PREMIER.SPORT.3.HD.sk",
+            "Prima.Cool.cz", "Prima.COOL.SK.cz", "Prima.cz", "Prima.Krimi.cz", "Prima.KRIMI.SK.cz",
+            "Prima.LOVE.cz", "Prima.LOVE.SK.cz", "Prima.MAX.cz", "Prima.Show.cz", "Prima.SK.cz",
+            "Prima.Star.cz", "Red.Bull.TV.cz", "RELAX.cz", "RETRO.Music.TV.sk", "Rik.TV.cz", "Senzi.sk",
+            "Seznam.cz.TV.cz", "Skvelé.TV.cz", "Spark.TV.cz", "Spektrum.cz", "Spektrum.Home.HD.sk",
+            "Sport1.HD.sk", "Sport2.HD.sk", "STORY.4.sk", "Superyacht.cz", "Šlágr.Muzika.cz", "Šlágr.Originál.cz",
+            "TA3.HD.sk", "TLC.HD.sk", "Travel.Channel.HD.sk", "Travel.XP.HD.sk", "Turbo.TV.cz", "TV.Bratislava.cz",
+            "TV.Brno.1.cz", "TV.Doktor.cz", "TV.REBEL.sk", "TV.Spark.HD.sk", "Viasat.Explore.HD.sk",
+            "Viasat.History.HD.sk", "Viasat.Nature.HD.sk", "Warner.TV.cz"
+          ]);
+          for (const parentId of Object.keys(PLUS_ONE_CLONES)) NEEDED_IDS.add(parentId);
+
+          async function downloadFile(url, dest) {
             return new Promise((resolve, reject) => {
-              console.log(`Rozbaľujem a spracovávam ${path.basename(gzPath)}...`);
-              const gunzip = zlib.createGunzip();
-              const fileStream = fs.createReadStream(gzPath);
-              const rl = readline.createInterface({
-                input: fileStream.pipe(gunzip),
-                crlfDelay: Infinity
-              });
-
-              let inChannel = false;
-              let inProg = false;
-              let currentBlock = '';
-              let currentId = '';
-              let progCount = 0;
-
-              rl.on('line', (line) => {
-                if (line.includes('<channel id=')) {
-                  inChannel = true;
-                  const m = line.match(/<channel id="([^"]+)">/);
-                  currentId = m ? m[1] : '';
-                  currentBlock = line + '\n';
-                } else if (inChannel) {
-                  currentBlock += line + '\n';
-                  if (line.includes('</channel>')) {
-                    inChannel = false;
-                    if (currentId && !channelMap.has(currentId)) {
-                      channelMap.set(currentId, currentBlock);
-                    }
-                    currentBlock = '';
-                    currentId = '';
-                  }
-                } else if (line.includes('<programme')) {
-                  inProg = true;
-                  currentBlock = line + '\n';
-                } else if (inProg) {
-                  currentBlock += line + '\n';
-                  if (line.includes('</programme>')) {
-                    inProg = false;
-                    progTempStream.write(currentBlock);
-                    progCount++;
-                    currentBlock = '';
-                  }
-                }
-              });
-
-              rl.on('close', () => {
-                console.log(`Dokončené pre ${path.basename(gzPath)}: Kanálov spolu: ${channelMap.size}, Programov: ${progCount}`);
-                resolve();
-              });
-
-              rl.on('error', reject);
-              gunzip.on('error', reject);
-              fileStream.on('error', reject);
+              const file = fs.createWriteStream(dest);
+              https.get(url, (res) => {
+                if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode}`));
+                res.pipe(file);
+                file.on('finish', () => { file.close(); resolve(); });
+              }).on('error', (err) => { fs.unlink(dest, () => {}); reject(err); });
             });
           }
 
           async function run() {
+            const t0 = Date.now();
             const skGz = 'sk_temp.xml.gz';
             const czGz = 'cz_temp.xml.gz';
-            const progTempPath = 'progs_temp.txt';
-            const outXmlPath = 'epg.xml';
+            const progTemp = 'progs_temp.txt';
+            const outXml = 'epg.xml';
 
-            await downloadGz('https://epgshare01.online/epgshare01/epg_ripper_SK1.xml.gz', skGz);
-            await downloadGz('https://epgshare01.online/epgshare01/epg_ripper_CZ1.xml.gz', czGz);
+            console.log('1. Sťahujem čerstvé EPG dáta zo siete epgshare01...');
+            await downloadFile('https://epgshare01.online/epgshare01/epg_ripper_SK1.xml.gz', skGz);
+            await downloadFile('https://epgshare01.online/epgshare01/epg_ripper_CZ1.xml.gz', czGz);
 
             const channelMap = new Map();
-            const progTempStream = fs.createWriteStream(progTempPath, { encoding: 'utf8' });
+            const progStream = fs.createWriteStream(progTemp, { encoding: 'utf8' });
 
-            await extractChannelsAndProgrammes(skGz, channelMap, progTempStream);
-            await extractChannelsAndProgrammes(czGz, channelMap, progTempStream);
-
-            await new Promise(r => progTempStream.end(r));
-
-            console.log('Zapisujem výsledné epg.xml...');
-            const finalStream = fs.createWriteStream(outXmlPath, { encoding: 'utf8' });
-            finalStream.write('<?xml version="1.0" encoding="utf-8"?>\n<tv generator-info-name="PlayTV EPG" generator-info-url="https://playtv.vip/">\n');
-
-            for (const block of channelMap.values()) {
-              finalStream.write(block);
+            for (const [pId, clone] of Object.entries(PLUS_ONE_CLONES)) {
+              channelMap.set(clone.targetId, `  <channel id="${clone.targetId}">\n    <display-name lang="sk">${clone.targetName}</display-name>\n  </channel>\n`);
             }
 
-            const progReadStream = fs.createReadStream(progTempPath);
+            async function processGz(gzPath) {
+              const gunzip = zlib.createGunzip();
+              const rl = readline.createInterface({ input: fs.createReadStream(gzPath).pipe(gunzip), crlfDelay: Infinity });
+
+              let inChannel = false, inProg = false, curBlock = '', curId = '', curProgChannel = '';
+
+              for await (const line of rl) {
+                if (line.includes('<channel id=')) {
+                  const m = line.match(/<channel id="([^"]+)">/);
+                  curId = m ? m[1] : '';
+                  if (NEEDED_IDS.has(curId)) { inChannel = true; curBlock = line + '\n'; }
+                  else inChannel = false;
+                } else if (inChannel) {
+                  curBlock += line + '\n';
+                  if (line.includes('</channel>')) {
+                    inChannel = false;
+                    if (curId && !channelMap.has(curId)) channelMap.set(curId, curBlock);
+                    curBlock = ''; curId = '';
+                  }
+                } else if (line.includes('<programme')) {
+                  const m = line.match(/channel="([^"]+)"/);
+                  curProgChannel = m ? m[1] : '';
+                  if (NEEDED_IDS.has(curProgChannel)) { inProg = true; curBlock = line + '\n'; }
+                  else inProg = false;
+                } else if (inProg) {
+                  curBlock += line + '\n';
+                  if (line.includes('</programme>')) {
+                    inProg = false;
+                    progStream.write(curBlock);
+
+                    if (PLUS_ONE_CLONES[curProgChannel]) {
+                      const clone = PLUS_ONE_CLONES[curProgChannel];
+                      const shifted = curBlock.replace(/<programme([^>]+)>/, (match, attrs) => {
+                        let a = attrs.replace(/channel="([^"]+)"/, `channel="${clone.targetId}"`);
+                        a = a.replace(/start="([^"]+)"/, (m, s) => `start="${shiftXmltvTime(s, 1)}"`);
+                        a = a.replace(/stop="([^"]+)"/, (m, s) => `stop="${shiftXmltvTime(s, 1)}"`);
+                        return `<programme${a}>`;
+                      });
+                      progStream.write(shifted);
+                    }
+                    curBlock = ''; curProgChannel = '';
+                  }
+                }
+              }
+            }
+
+            console.log('2. Filtrujem stanice a generujem synchronizované +1 programy...');
+            await processGz(skGz);
+            await processGz(czGz);
+            await new Promise(r => progStream.end(r));
+
+            console.log('3. Zapisujem optimalizované epg.xml...');
+            const finalStream = fs.createWriteStream(outXml, { encoding: 'utf8' });
+            finalStream.write('<?xml version="1.0" encoding="utf-8"?>\n<tv generator-info-name="PlayTV Hybrid EPG" generator-info-url="https://playtv.vip/">\n');
+
+            for (const block of channelMap.values()) finalStream.write(block);
+
+            const progRead = fs.createReadStream(progTemp);
             await new Promise((resolve, reject) => {
-              progReadStream.pipe(finalStream, { end: false });
-              progReadStream.on('end', resolve);
-              progReadStream.on('error', reject);
+              progRead.pipe(finalStream, { end: false });
+              progRead.on('end', resolve);
+              progRead.on('error', reject);
             });
 
             finalStream.write('</tv>\n');
@@ -146,10 +187,10 @@ jobs:
 
             try { fs.unlinkSync(skGz); } catch(e){}
             try { fs.unlinkSync(czGz); } catch(e){}
-            try { fs.unlinkSync(progTempPath); } catch(e){}
+            try { fs.unlinkSync(progTemp); } catch(e){}
 
-            const stats = fs.statSync(outXmlPath);
-            console.log(`✅ Úspech! Vygenerovaný čistý súbor epg.xml (Veľkosť: ${(stats.size / 1024 / 1024).toFixed(2)} MB, Kanálov: ${channelMap.size})`);
+            const stat = fs.statSync(outXml);
+            console.log(`✅ Úspech za ${((Date.now() - t0)/1000).toFixed(1)}s! Veľkosť súboru: ${(stat.size/1024/1024).toFixed(2)} MB, Kanálov: ${channelMap.size}`);
           }
 
           run().catch(err => {
@@ -168,7 +209,7 @@ jobs:
           if git diff --staged --quiet; then
             echo "EPG sa od poslednej kontroly nezmenilo."
           else
-            git commit -m "Automatická aktualizácia EPG z epgshare01 (CZ + SK) [skip ci]"
+            git commit -m "Automatická aktualizácia Hybrid EPG [skip ci]"
             git push
-            echo "Nové EPG úspešne nahrané!"
+            echo "Nové optimalizované EPG úspešne nahrané!"
           fi
