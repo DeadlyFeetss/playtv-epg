@@ -65,7 +65,7 @@ jobs:
             "DVTV EXTRA HD.sk (src09)": { targetId: "DVTV EXTRA HD.sk (src09)", targetName: "DVTV Extra HD", alias: "DVTV.Extra.cz" },
             "Nautical Channel.cz (src09)": { targetId: "Nautical Channel.cz (src09)", targetName: "Nautical Channel HD", alias: "Nautical.Channel.cz" },
             "Fast &amp; FunBox HD.sk (src09)": { targetId: "Fast &amp; FunBox HD.sk (src09)", targetName: "FunBox HD", alias: "Fast&amp;Funbox.HD.cz" },
-            "Fast & FunBox HD.sk (src09)": { targetId: "Fast & FunBox HD.sk (src09)", targetName: "FunBox HD", alias: "Fast&amp;Funbox.HD.cz" },
+            "Fast & FunBox HD.sk (src09)": { targetId: "Fast &amp; FunBox HD.sk (src09)", targetName: "FunBox HD", alias: "Fast&amp;Funbox.HD.cz" },
             "Premium.cz": { targetId: "Premium.cz", targetName: "Šlágr Premium HD", alias: "PREMIUM.HD.sk" },
             "MTV.cz (src05)": { targetId: "MTV.cz (src05)", targetName: "MTV Live HD", alias: "MTV.Live.HD.sk" },
             "Turbo.TV.cz (src05)": { targetId: "Turbo.TV.cz (src05)", targetName: "Turbo TV HD", alias: "Turbo.TV.cz" },
@@ -345,11 +345,14 @@ jobs:
               channelMap.set(clone.targetId, `  <channel id="${clone.targetId}">\n    <display-name lang="sk">${clone.targetName}</display-name>\n  </channel>\n`);
             }
 
-            // Definície pre hybridné kanály z m3u4u (targetId aj alias)
+            // Definície pre hybridné kanály z m3u4u (targetId aj alias s automatickým ošetrením &amp;)
             for (const [sId, info] of Object.entries(M3U4U_EXTRACTIONS)) {
-              channelMap.set(info.targetId, `  <channel id="${info.targetId}">\n    <display-name lang="sk">${info.targetName}</display-name>\n  </channel>\n`);
+              const escTargetId = info.targetId.replace(/&(?!(amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)/g, '&amp;');
+              const escTargetName = info.targetName.replace(/&(?!(amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)/g, '&amp;');
+              channelMap.set(escTargetId, `  <channel id="${escTargetId}">\n    <display-name lang="sk">${escTargetName}</display-name>\n  </channel>\n`);
               if (info.alias && info.alias !== info.targetId) {
-                channelMap.set(info.alias, `  <channel id="${info.alias}">\n    <display-name lang="sk">${info.targetName}</display-name>\n  </channel>\n`);
+                const escAlias = info.alias.replace(/&(?!(amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)/g, '&amp;');
+                channelMap.set(escAlias, `  <channel id="${escAlias}">\n    <display-name lang="sk">${escTargetName}</display-name>\n  </channel>\n`);
               }
             }
 
@@ -468,6 +471,17 @@ jobs:
 
             finalStream.write('</tv>\n');
             await new Promise(r => finalStream.end(r));
+
+            // 4. Automatická kontrola a sanitizácia nepovolených XML entít (& -> &amp;)
+            console.log('4. Kontrola a sanitizácia nepovolených XML znakov...');
+            let xmlContent = fs.readFileSync(outXml, 'utf8');
+            const cleanContent = xmlContent.replace(/&(?!(amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)/g, '&amp;');
+            if (xmlContent !== cleanContent) {
+              fs.writeFileSync(outXml, cleanContent, 'utf8');
+              console.log('✅ Boli opravené neplatné XML entity (& -> &amp;).');
+            } else {
+              console.log('✅ XML je 100% čisté a platné.');
+            }
 
             try { fs.unlinkSync(skGz); } catch(e){}
             try { fs.unlinkSync(czGz); } catch(e){}
